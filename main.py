@@ -26,6 +26,8 @@ def main():
             if signal:
                 order = place_order(CONFIG["symbol"], signal["side"], signal["amount"])
                 log.info(f"{signal['side'].upper()} {signal['amount']} @ {order['price']}")
+            else:
+                log.info("No signal this bar")
         except Exception as e:
             log.error("Engine error", exc_info=e)
         time.sleep(60)
