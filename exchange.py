@@ -6,7 +6,8 @@ import ccxt
 
 def init_exchange():
     """
-    Load API keys from .env and return a sandbox-mode CCXT Binance client.
+    Load API keys from .env and return a sandbox-mode CCXT Binance client
+    with markets pre-loaded.
     """
     load_dotenv()
     api_key    = os.getenv("BINANCE_API_KEY")
@@ -28,12 +29,16 @@ def init_exchange():
         },
     })
     exchange.set_sandbox_mode(True)
+
+    # ─── NEW: load market definitions up front ────────────────────────────────
+    exchange.load_markets()
+
     return exchange
 
 def fetch_ohlcv(symbol, timeframe="1m", limit=100):
     """
     Fetch OHLCV bars from Binance Testnet.
-    Returns list of [timestamp, open, high, low, close, volume].
+    Returns a list of [timestamp, open, high, low, close, volume].
     """
     ex = init_exchange()
     return ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
@@ -41,7 +46,8 @@ def fetch_ohlcv(symbol, timeframe="1m", limit=100):
 def place_order(symbol, side, amount):
     """
     Place a market order on Binance Testnet.
-    side: "buy" or "sell", amount: how many base‐asset units.
+    side: "buy" or "sell"
+    amount: how many base-asset units
     Returns the CCXT order dict.
     """
     ex = init_exchange()

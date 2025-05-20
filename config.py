@@ -11,4 +11,4 @@ SLOW_SMA = 30                # “Slow” moving average period
 # ─── Loop & Data Settings ───────────────────────────────────────────────────
 TIMEFRAME     = "1m"         # Candle timeframe for OHLCV
 OHLCV_LIMIT   = SLOW_SMA + 1 # How many bars to fetch each cycle
-LOOP_INTERVAL = 60           # Seconds to wait between cycles
+LOOP_INTERVAL = 5           # Seconds to wait between cycles
