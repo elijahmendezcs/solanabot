@@ -5,7 +5,7 @@ SYMBOL       = "SOL/USDT"    # Which market to trade
 USDT_AMOUNT  = 10.0          # USD value per trade
 
 # ─── SMA Crossover Settings ──────────────────────────────────────────────────
-FAST_SMA = 10                # “Fast” moving average period
+FAST_SMA = 15                # “Fast” moving average period
 SLOW_SMA = 30                # “Slow” moving average period
 
 # ─── Loop & Data Settings ───────────────────────────────────────────────────
