@@ -8,30 +8,18 @@ from datetime import datetime
 from exchange import init_exchange, fetch_ohlcv, place_order
 from logger import setup_logger
 from strategies.sma_crossover import SmaCrossover
-from strategies.rsi import RsiStrategy
 from config import LOOP_INTERVAL
 
 # Path to the CSV file for logging trades
 data_file = os.path.join("data", "trades.csv")
 
-# Strategy configurations: add more entries here as needed
+# Strategy configurations: only SMA crossover for now
 STRATEGY_CONFIGS = [
     {
         "class": SmaCrossover,
         "params": {"symbol": "SOL/USDT", "usdt_amount": 10.0, "fast": 10, "slow": 30},
     },
-    {
-        "class": RsiStrategy,
-        "params": {
-            "symbol":      "SOL/USDT",
-            "usdt_amount": 10.0,
-            "rsi_period":  2,    # super-short RSI
-            "overbought":  50,   # mid-point
-            "oversold":    50,   # mid-point so RSI is always “crossed"
-        },
-    },
 ]
-
 
 def ensure_data_file():
     """Ensure data/trades.csv exists with a header row."""
@@ -39,10 +27,9 @@ def ensure_data_file():
     if not os.path.exists(data_file):
         with open(data_file, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["timestamp", "side", "price", "amount", "cost"])
+            writer.writerow(["timestamp", "strategy", "side", "price", "amount", "cost"])
 
-
-def log_trade(side, order):
+def log_trade(strategy_name, side, order):
     """Append a filled order to data/trades.csv."""
     timestamp = datetime.utcnow().isoformat()
     price     = float(order["price"])
@@ -51,8 +38,7 @@ def log_trade(side, order):
 
     with open(data_file, "a", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([timestamp, side, price, amount, cost])
-
+        writer.writerow([timestamp, strategy_name, side, price, amount, cost])
 
 def main():
     # Prepare the data file
@@ -64,11 +50,8 @@ def main():
     # Instantiate strategy objects
     strategies = [cfg["class"](exchange, cfg["params"]) for cfg in STRATEGY_CONFIGS]
 
-    # Determine the maximum lookback needed
-    max_period = max(
-        getattr(s, "slow", 0) if hasattr(s, "slow") else s.config.get("rsi_period", 0)
-        for s in strategies
-    )
+    # Determine the maximum lookback needed (only SMA now)
+    max_period = max(getattr(s, "slow", 0) for s in strategies)
     ohlcv_limit = max_period + 1
 
     log.info("▶️ Starting multi-strategy engine…")
@@ -76,7 +59,7 @@ def main():
         try:
             bars = fetch_ohlcv("SOL/USDT", timeframe="1m", limit=ohlcv_limit)
             last_price = bars[-1][4]
-            log.info(f"Heartbeat — last price: {last_price}")  # log each loop
+            log.info(f"Heartbeat — last price: {last_price}")
 
             for strat in strategies:
                 sig = strat.on_bar(bars)
@@ -86,13 +69,13 @@ def main():
                     order = place_order(strat.config["symbol"], side, amt)
 
                     log.info(f"{strat.__class__.__name__}: {side.upper()} {amt} @ {order['price']}")
-                    log_trade(side, order)
+                    strat_name = strat.__class__.__name__
+                    log_trade(strat_name, side, order)
 
         except Exception as e:
             log.error("Engine error", exc_info=e)
 
         time.sleep(LOOP_INTERVAL)
-
 
 if __name__ == "__main__":
     main()
