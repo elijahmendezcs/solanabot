@@ -1,5 +1,4 @@
 # File: main.py
-
 import os
 import csv
 import time
@@ -7,11 +6,12 @@ from datetime import datetime
 
 from exchange import init_exchange, fetch_ohlcv, place_order
 from logger import setup_logger
+from notifications import send_telegram
 from strategies.sma_crossover import SmaCrossover
 from config import LOOP_INTERVAL
 
 # Path to the CSV file for logging trades
-data_file = os.path.join("data", "trades.csv")
+_data_file = os.path.join("data", "trades.csv")
 
 # Strategy configurations: only SMA crossover for now
 STRATEGY_CONFIGS = [
@@ -22,35 +22,32 @@ STRATEGY_CONFIGS = [
 ]
 
 def ensure_data_file():
-    """Ensure data/trades.csv exists with a header row."""
-    os.makedirs(os.path.dirname(data_file), exist_ok=True)
-    if not os.path.exists(data_file):
-        with open(data_file, "w", newline="") as f:
+    os.makedirs(os.path.dirname(_data_file), exist_ok=True)
+    if not os.path.exists(_data_file):
+        with open(_data_file, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["timestamp", "strategy", "side", "price", "amount", "cost"])
 
-def log_trade(strategy_name, side, order):
-    """Append a filled order to data/trades.csv."""
+def log_trade(strategy_name: str, side: str, order: dict):
     timestamp = datetime.utcnow().isoformat()
     price     = float(order["price"])
     amount    = float(order["amount"])
     cost      = price * amount
 
-    with open(data_file, "a", newline="") as f:
+    with open(_data_file, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([timestamp, strategy_name, side, price, amount, cost])
 
+    # Send Telegram notification
+    send_telegram(f"{strategy_name}: {side.upper()} {amount} @ {price:.2f}")
+
 def main():
-    # Prepare the data file
     ensure_data_file()
 
     log      = setup_logger()
     exchange = init_exchange()
 
-    # Instantiate strategy objects
     strategies = [cfg["class"](exchange, cfg["params"]) for cfg in STRATEGY_CONFIGS]
-
-    # Determine the maximum lookback needed (only SMA now)
     max_period = max(getattr(s, "slow", 0) for s in strategies)
     ohlcv_limit = max_period + 1
 
@@ -74,6 +71,7 @@ def main():
 
         except Exception as e:
             log.error("Engine error", exc_info=e)
+            send_telegram(f"Engine error: {e}")
 
         time.sleep(LOOP_INTERVAL)
 
