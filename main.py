@@ -30,14 +30,18 @@ def ensure_data_file():
         with open(DATA_FILE, "w", newline="") as f:
             csv.writer(f).writerow(["timestamp","strategy","side","price","amount","cost"])
 
-def log_trade(strategy_name, side, order):
+def log_trade(strategy_name, side, order, reason=None):
     ts = datetime.utcnow().isoformat()
     price  = float(order["price"])
     amount = float(order["amount"])
     cost   = price * amount
     with open(DATA_FILE, "a", newline="") as f:
         csv.writer(f).writerow([ts, strategy_name, side, price, amount, cost])
-    send_telegram(f"{strategy_name}: {side.upper()} {amount:.8f} @ {price:.2f}")
+    # include 'reason' if provided
+    msg = f"{strategy_name}: {side.upper()} {amount:.8f} @ {price:.2f}"
+    if reason:
+        msg += f" ({reason})"
+    send_telegram(msg)
 
 async def main():
     ensure_data_file()
@@ -53,7 +57,6 @@ async def main():
     bars = []
 
     async for candle in ws.ohlcv_stream():
-        # once per closed 1m bar
         bars.append(candle)
         if len(bars) > ohlcv_limit:
             bars = bars[-ohlcv_limit:]
@@ -67,8 +70,8 @@ async def main():
         is_trending  = volatility > ATR_THRESHOLD
         log.info(f"Volatility: {volatility:.3%} → {'Trending' if is_trending else 'Ranging'}")
 
-        # Strategy execution
         for strat in strategies:
+            # regime gating
             if isinstance(strat, SmaCrossover) and not is_trending:
                 continue
             if isinstance(strat, RsiStrategy) and is_trending:
@@ -79,6 +82,7 @@ async def main():
                 continue
 
             side, amt = sig["side"], sig["amount"]
+            reason    = sig.get("reason")
             if PAPER_TRADING:
                 order = {"price": last_price, "amount": amt}
                 log.info(f"[PAPER] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {last_price:.2f}")
@@ -91,7 +95,7 @@ async def main():
                 order = exchange.create_market_order(strat.config["symbol"], side, amt)
                 log.info(f"{strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {order['price']:.2f}")
 
-            log_trade(strat.__class__.__name__, side, order)
+            log_trade(strat.__class__.__name__, side, order, reason=reason)
 
         await asyncio.sleep(0)
 
