@@ -1,7 +1,7 @@
 # File: config.py
 
 # ─── Trading Pair & Order Size ────────────────────────────────────────────────
-SYMBOL        = "SOL/USD"     # Kraken’s SOL/USD market
+SYMBOL        = "SOL/USDT"     # Kraken’s SOL/USD market // now binance spot pair
 USDT_AMOUNT   = 10.0          # USD value per trade (used in backtests)
 
 # Percent of quote balance to risk per trade
@@ -39,6 +39,11 @@ TRAIL_PCT     = 0.002         # 0.2% trailing stop
 # Time-cap: maximum minutes to hold a trade if other exits not triggered
 # Using 5m bars, 3 bars = 15 minutes
 MAX_HOLD_MINS = 15            # e.g. 3 bars of 5m data
+
+
+# ─── ATR‐Based Regime Detection ────────────────────────────────────────────────
+ATR_PERIOD     = 14           # Bars for ATR calculation
+ATR_THRESHOLD  = 0.005        # Volatility threshold (ATR / price > 0.5%)
 
 
 # ─── Loop & Data Settings ───────────────────────────────────────────────────

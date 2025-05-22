@@ -1,86 +1,100 @@
 # File: main.py
 
+import asyncio
 import os
 import csv
-import time
 from datetime import datetime
 
-from exchange import init_exchange, fetch_ohlcv, place_order
+from exchange import init_exchange
 from logger import setup_logger
 from notifications import send_telegram
-from config import SYMBOL, USDT_AMOUNT, TIMEFRAME, LOOP_INTERVAL, PAPER_TRADING
+from config import (
+    SYMBOL, USDT_AMOUNT, TIMEFRAME, PAPER_TRADING,
+    ATR_PERIOD, ATR_THRESHOLD
+)
+from utils.indicators import atr
 from strategies.sma_crossover import SmaCrossover
 from strategies.rsi import RsiStrategy
+from realtime import Realtime  # now defaults to Binance US
 
-_data_file = os.path.join("data", "trades.csv")
+DATA_FILE = os.path.join("data", "trades.csv")
 
 STRATEGY_CONFIGS = [
-    { "class": SmaCrossover, "params": {"symbol": SYMBOL, "usdt_amount": USDT_AMOUNT, "fast": 10, "slow": 100} },
-    { "class": RsiStrategy,   "params": {"symbol": SYMBOL, "usdt_amount": USDT_AMOUNT} },
+    {"class": SmaCrossover, "params": {"symbol": SYMBOL, "usdt_amount": USDT_AMOUNT, "fast": 10, "slow": 100}},
+    {"class": RsiStrategy,   "params": {"symbol": SYMBOL, "usdt_amount": USDT_AMOUNT}},
 ]
 
 def ensure_data_file():
-    os.makedirs(os.path.dirname(_data_file), exist_ok=True)
-    if not os.path.exists(_data_file):
-        with open(_data_file, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["timestamp","strategy","side","price","amount","cost"])
+    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+    if not os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "w", newline="") as f:
+            csv.writer(f).writerow(["timestamp","strategy","side","price","amount","cost"])
 
-def log_trade(strategy_name: str, side: str, order: dict):
-    timestamp = datetime.utcnow().isoformat()
-    price     = float(order["price"])
-    amount    = float(order["amount"])
-    cost      = price * amount
-
-    with open(_data_file, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([timestamp, strategy_name, side, price, amount, cost])
-
+def log_trade(strategy_name, side, order):
+    ts = datetime.utcnow().isoformat()
+    price  = float(order["price"])
+    amount = float(order["amount"])
+    cost   = price * amount
+    with open(DATA_FILE, "a", newline="") as f:
+        csv.writer(f).writerow([ts, strategy_name, side, price, amount, cost])
     send_telegram(f"{strategy_name}: {side.upper()} {amount:.8f} @ {price:.2f}")
 
-def main():
+async def main():
     ensure_data_file()
     log      = setup_logger()
     exchange = init_exchange()
+    # Stream bars from Binance US
+    ws       = Realtime("binanceus")
 
-    strategies = [ cfg["class"](exchange, cfg["params"]) for cfg in STRATEGY_CONFIGS ]
-
+    strategies = [cfg["class"](exchange, cfg["params"]) for cfg in STRATEGY_CONFIGS]
     max_period = max(getattr(s, "slow", getattr(s, "period", 0)) for s in strategies)
     ohlcv_limit = max_period + 1
 
-    log.info("▶️ Starting multi-strategy engine…")
-    while True:
-        try:
-            bars       = fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=ohlcv_limit)
-            last_price = bars[-1][4]
-            log.info(f"Heartbeat — last price: {last_price}")
+    log.info("▶️ Starting WebSocket-driven engine on Binance US…")
+    bars = []
 
-            for strat in strategies:
-                sig = strat.on_bar(bars)
-                if not sig:
+    async for candle in ws.ohlcv_stream(SYMBOL, TIMEFRAME):
+        # Update sliding window
+        bars.append(candle)
+        if len(bars) > ohlcv_limit:
+            bars = bars[-ohlcv_limit:]
+
+        last_price = bars[-1][4]
+        # Heartbeat log
+        log.info(f"Heartbeat — last price: {last_price:.2f}")
+
+        # ATR‐based regime detection
+        current_atr = atr(bars, ATR_PERIOD)
+        volatility  = current_atr / last_price
+        is_trending  = volatility > ATR_THRESHOLD
+        log.info(f"Volatility: {volatility:.3%} → {'Trending' if is_trending else 'Ranging'}")
+
+        # Strategy execution
+        for strat in strategies:
+            if isinstance(strat, SmaCrossover) and not is_trending: continue
+            if isinstance(strat, RsiStrategy)   and is_trending:    continue
+
+            sig = strat.on_bar(bars)
+            if not sig: continue
+
+            side, amt = sig["side"], sig["amount"]
+            if PAPER_TRADING:
+                order = {"price": last_price, "amount": amt}
+                log.info(f"[PAPER] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {last_price:.2f}")
+            else:
+                # Skip orders below market minimum
+                market  = exchange.markets[SYMBOL]
+                min_amt = market["limits"]["amount"]["min"]
+                if amt < min_amt:
+                    log.info(f"Skipped {side} {amt:.8f} — below min size {min_amt}")
                     continue
+                order = exchange.create_market_order(strat.config["symbol"], side, amt)
+                log.info(f"{strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {order['price']:.2f}")
 
-                side, amt = sig["side"], sig["amount"]
-                if PAPER_TRADING:
-                    order = {"price": last_price, "amount": amt}
-                    log.info(f"[PAPER] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {last_price}")
-                else:
-                    # guard against orders below exchange minimum
-                    market  = exchange.markets[SYMBOL]
-                    min_amt = market["limits"]["amount"]["min"]
-                    if amt < min_amt:
-                        log.info(f"Skipping {side} of {amt:.8f} — below min size {min_amt}")
-                        continue
-                    order = place_order(strat.config["symbol"], side, amt)
-                    log.info(f"{strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {order['price']}")
+            log_trade(strat.__class__.__name__, side, order)
 
-                log_trade(strat.__class__.__name__, side, order)
-
-        except Exception as e:
-            log.error("Engine error", exc_info=e)
-            send_telegram(f"Engine error: {e}")
-
-        time.sleep(LOOP_INTERVAL)
+        # Yield control briefly
+        await asyncio.sleep(0)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
