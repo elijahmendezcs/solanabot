@@ -8,17 +8,22 @@ from datetime import datetime
 from exchange import init_exchange, fetch_ohlcv, place_order
 from logger import setup_logger
 from notifications import send_telegram
+from config import LOOP_INTERVAL, PAPER_TRADING, TIMEFRAME
 from strategies.sma_crossover import SmaCrossover
-from config import LOOP_INTERVAL, PAPER_TRADING
+from strategies.rsi import RsiStrategy
 
 # Path to the CSV file for logging trades
 _data_file = os.path.join("data", "trades.csv")
 
-# Strategy configurations: only SMA crossover for now
+# Strategy configurations: SMA crossover and RSI
 STRATEGY_CONFIGS = [
     {
         "class": SmaCrossover,
         "params": {"symbol": "SOL/USDT", "usdt_amount": 10.0, "fast": 10, "slow": 100},
+    },
+    {
+        "class": RsiStrategy,
+        "params": {"symbol": "SOL/USDT", "usdt_amount": 10.0},
     },
 ]
 
@@ -28,6 +33,7 @@ def ensure_data_file():
         with open(_data_file, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["timestamp", "strategy", "side", "price", "amount", "cost"])
+
 
 def log_trade(strategy_name: str, side: str, order: dict):
     timestamp = datetime.utcnow().isoformat()
@@ -39,8 +45,8 @@ def log_trade(strategy_name: str, side: str, order: dict):
         writer = csv.writer(f)
         writer.writerow([timestamp, strategy_name, side, price, amount, cost])
 
-    # Send Telegram notification
     send_telegram(f"{strategy_name}: {side.upper()} {amount} @ {price:.2f}")
+
 
 def main():
     ensure_data_file()
@@ -49,13 +55,15 @@ def main():
     exchange = init_exchange()
 
     strategies = [cfg["class"](exchange, cfg["params"]) for cfg in STRATEGY_CONFIGS]
-    max_period = max(getattr(s, "slow", 0) for s in strategies)
+    max_period = max(
+        getattr(s, "slow", getattr(s, "period", 0)) for s in strategies
+    )
     ohlcv_limit = max_period + 1
 
     log.info("▶️ Starting multi-strategy engine…")
     while True:
         try:
-            bars = fetch_ohlcv("SOL/USDT", timeframe="1m", limit=ohlcv_limit)
+            bars = fetch_ohlcv("SOL/USDT", timeframe=TIMEFRAME, limit=ohlcv_limit)
             last_price = bars[-1][4]
             log.info(f"Heartbeat — last price: {last_price}")
 
@@ -64,21 +72,15 @@ def main():
                 if not sig:
                     continue
 
-                side = sig["side"]
-                amt  = sig["amount"]
-
+                side, amt = sig["side"], sig["amount"]
                 if PAPER_TRADING:
-                    # Simulate a paper trade
                     order = {"price": last_price, "amount": amt}
                     log.info(f"[PAPER] {strat.__class__.__name__}: {side.upper()} {amt} @ {last_price}")
                 else:
-                    # Real live order
                     order = place_order(strat.config["symbol"], side, amt)
                     log.info(f"{strat.__class__.__name__}: {side.upper()} {amt} @ {order['price']}")
 
-                # Log (and notify) either way
-                strat_name = strat.__class__.__name__
-                log_trade(strat_name, side, order)
+                log_trade(strat.__class__.__name__, side, order)
 
         except Exception as e:
             log.error("Engine error", exc_info=e)
