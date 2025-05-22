@@ -1,4 +1,5 @@
 # File: main.py
+
 import os
 import csv
 import time
@@ -8,7 +9,7 @@ from exchange import init_exchange, fetch_ohlcv, place_order
 from logger import setup_logger
 from notifications import send_telegram
 from strategies.sma_crossover import SmaCrossover
-from config import LOOP_INTERVAL
+from config import LOOP_INTERVAL, PAPER_TRADING
 
 # Path to the CSV file for logging trades
 _data_file = os.path.join("data", "trades.csv")
@@ -17,7 +18,7 @@ _data_file = os.path.join("data", "trades.csv")
 STRATEGY_CONFIGS = [
     {
         "class": SmaCrossover,
-        "params": {"symbol": "SOL/USDT", "usdt_amount": 10.0, "fast": 10, "slow": 30},
+        "params": {"symbol": "SOL/USDT", "usdt_amount": 10.0, "fast": 10, "slow": 100},
     },
 ]
 
@@ -60,14 +61,24 @@ def main():
 
             for strat in strategies:
                 sig = strat.on_bar(bars)
-                if sig:
-                    side  = sig["side"]
-                    amt   = sig["amount"]
-                    order = place_order(strat.config["symbol"], side, amt)
+                if not sig:
+                    continue
 
+                side = sig["side"]
+                amt  = sig["amount"]
+
+                if PAPER_TRADING:
+                    # Simulate a paper trade
+                    order = {"price": last_price, "amount": amt}
+                    log.info(f"[PAPER] {strat.__class__.__name__}: {side.upper()} {amt} @ {last_price}")
+                else:
+                    # Real live order
+                    order = place_order(strat.config["symbol"], side, amt)
                     log.info(f"{strat.__class__.__name__}: {side.upper()} {amt} @ {order['price']}")
-                    strat_name = strat.__class__.__name__
-                    log_trade(strat_name, side, order)
+
+                # Log (and notify) either way
+                strat_name = strat.__class__.__name__
+                log_trade(strat_name, side, order)
 
         except Exception as e:
             log.error("Engine error", exc_info=e)

@@ -1,7 +1,8 @@
-# grid_backtest.py
+# File: grid_backtest.py
+
 import statistics
 from exchange import fetch_ohlcv
-from config import SYMBOL, TIMEFRAME
+from config import SYMBOL, TIMEFRAME, FEE_PCT, SLIPPAGE_PCT
 
 
 def generate_signal(closes, fast, slow):
@@ -23,25 +24,32 @@ def generate_signal(closes, fast, slow):
 
 
 def run_backtest(closes, fast, slow):
-    pnl, trades, position, entry = 0.0, 0, 0, 0.0
-    for i in range(slow, len(closes)):
-        sig = generate_signal(closes[: i+1], fast, slow)
-        price = closes[i]
+    pnl, trades, position, entry_cost = 0.0, 0, 0, 0.0
+    for price in closes[slow:]:
+        sig = generate_signal(closes[: closes.index(price)+1], fast, slow)
+        # Simulate buy
         if sig == "buy" and position == 0:
-            position, entry = 1, price
+            entry_price_slipped = price * (1 + SLIPPAGE_PCT)
+            entry_cost = entry_price_slipped * (1 + FEE_PCT)
+            position = 1
+        # Simulate sell
         elif sig == "sell" and position == 1:
-            pnl += price - entry
+            exit_price_slipped = price * (1 - SLIPPAGE_PCT)
+            proceeds = exit_price_slipped * (1 - FEE_PCT)
+            pnl += proceeds - entry_cost
             trades += 1
             position = 0
-    # Close any open position at last price
+    # Close final position
     if position == 1:
-        pnl += closes[-1] - entry
+        price = closes[-1]
+        exit_price_slipped = price * (1 - SLIPPAGE_PCT)
+        proceeds = exit_price_slipped * (1 - FEE_PCT)
+        pnl += proceeds - entry_cost
         trades += 1
     return pnl, trades
 
 
 def grid_search(fast_list, slow_list):
-    # Fetch historic bars once
     bars = fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=500)
     closes = [b[4] for b in bars]
     results = []
@@ -58,15 +66,11 @@ def grid_search(fast_list, slow_list):
             })
     return results
 
-
 if __name__ == "__main__":
-    # Define your grid here:
     fast_periods = [5, 10, 15, 20]
     slow_periods = [30, 50, 100]
 
     results = grid_search(fast_periods, slow_periods)
-
-    # Print top 5 configurations by P&L
     top = sorted(results, key=lambda x: x["pnl"], reverse=True)[:5]
     print("Top 5 SMA settings by P&L:")
     for r in top:
