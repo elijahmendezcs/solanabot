@@ -15,7 +15,7 @@ from config import (
 from utils.indicators import atr
 from strategies.sma_crossover import SmaCrossover
 from strategies.rsi import RsiStrategy
-from realtime import Realtime  # now defaults to Binance US
+from realtime import Realtime
 
 DATA_FILE = os.path.join("data", "trades.csv")
 
@@ -43,8 +43,7 @@ async def main():
     ensure_data_file()
     log      = setup_logger()
     exchange = init_exchange()
-    # Stream bars from Binance US
-    ws       = Realtime("binanceus")
+    ws       = Realtime(symbol=SYMBOL, interval=TIMEFRAME)
 
     strategies = [cfg["class"](exchange, cfg["params"]) for cfg in STRATEGY_CONFIGS]
     max_period = max(getattr(s, "slow", getattr(s, "period", 0)) for s in strategies)
@@ -53,14 +52,13 @@ async def main():
     log.info("▶️ Starting WebSocket-driven engine on Binance US…")
     bars = []
 
-    async for candle in ws.ohlcv_stream(SYMBOL, TIMEFRAME):
-        # Update sliding window
+    async for candle in ws.ohlcv_stream():
+        # once per closed 1m bar
         bars.append(candle)
         if len(bars) > ohlcv_limit:
             bars = bars[-ohlcv_limit:]
 
         last_price = bars[-1][4]
-        # Heartbeat log
         log.info(f"Heartbeat — last price: {last_price:.2f}")
 
         # ATR‐based regime detection
@@ -71,18 +69,20 @@ async def main():
 
         # Strategy execution
         for strat in strategies:
-            if isinstance(strat, SmaCrossover) and not is_trending: continue
-            if isinstance(strat, RsiStrategy)   and is_trending:    continue
+            if isinstance(strat, SmaCrossover) and not is_trending:
+                continue
+            if isinstance(strat, RsiStrategy) and is_trending:
+                continue
 
             sig = strat.on_bar(bars)
-            if not sig: continue
+            if not sig:
+                continue
 
             side, amt = sig["side"], sig["amount"]
             if PAPER_TRADING:
                 order = {"price": last_price, "amount": amt}
                 log.info(f"[PAPER] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {last_price:.2f}")
             else:
-                # Skip orders below market minimum
                 market  = exchange.markets[SYMBOL]
                 min_amt = market["limits"]["amount"]["min"]
                 if amt < min_amt:
@@ -93,7 +93,6 @@ async def main():
 
             log_trade(strat.__class__.__name__, side, order)
 
-        # Yield control briefly
         await asyncio.sleep(0)
 
 if __name__ == "__main__":

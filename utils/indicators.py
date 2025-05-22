@@ -25,10 +25,17 @@ def true_ranges(bars):
 def atr(bars, period):
     """
     Calculate the Average True Range over the last `period` bars.
-    Returns a float.
+    Returns a float (0.0 if not enough data to compute any TR).
     """
     window = bars[-(period + 1):]
     trs = true_ranges(window)
+    # No true ranges yet
+    if not trs:
+        return 0.0
+
+    # Partial fallback until we have `period` values
     if len(trs) < period:
-        return sum(trs) / len(trs)  # fallback if not enough data
+        return sum(trs) / len(trs)
+
+    # Full ATR
     return sum(trs[-period:]) / period

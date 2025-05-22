@@ -3,8 +3,7 @@
 """
 Simple script to calculate total P&L and average hold time
 from your live trades log (data/trades.csv).
-Assumes your CSV has columns: timestamp, strategy, side, price, amount, cost.
-
+Supports files with or without a header row.
 Usage:
     python3 profit_report.py
 """
@@ -15,6 +14,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 DATA_FILE = os.path.join("data", "trades.csv")
+
 
 def load_trades(path):
     """
@@ -27,34 +27,77 @@ def load_trades(path):
         'cost': signed float,
         'timestamp': datetime
       }
+    Detects header via csv.Sniffer and falls back to positional columns.
     """
     trades = []
     with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            strategy = row.get('strategy', '').strip()
-            side     = row['side'].strip().lower()
-            price    = float(row['price'])
-            amount   = float(row['amount'])
-            cost     = float(row['cost'])
-            signed_cost = cost if side == 'sell' else -cost
+        sample = f.read(1024)
+        f.seek(0)
+        has_header = csv.Sniffer().has_header(sample)
+        if has_header:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Skip any malformed or empty rows
+                if not row or 'side' not in row or not row['side']:
+                    continue
 
-            ts_str = row.get('timestamp')
-            if not ts_str:
-                raise ValueError("CSV missing a 'timestamp' column.")
-            if ts_str.endswith('Z'):
-                ts_str = ts_str.replace('Z', '+00:00')
-            timestamp = datetime.fromisoformat(ts_str)
+                strategy = row.get('strategy', '').strip()
+                side     = row['side'].strip().lower()
+                price    = float(row.get('price', 0))
+                amount   = float(row.get('amount', 0))
+                cost     = float(row.get('cost', 0))
+                signed_cost = cost if side == 'sell' else -cost
 
-            trades.append({
-                'strategy': strategy,
-                'side':     side,
-                'price':    price,
-                'amount':   amount,
-                'cost':     signed_cost,
-                'timestamp': timestamp
-            })
+                ts_str = row.get('timestamp', '')
+                if not ts_str:
+                    raise ValueError("CSV missing a 'timestamp' column.")
+                if ts_str.endswith('Z'):
+                    ts_str = ts_str.replace('Z', '+00:00')
+                timestamp = datetime.fromisoformat(ts_str)
+
+                trades.append({
+                    'strategy': strategy,
+                    'side':     side,
+                    'price':    price,
+                    'amount':   amount,
+                    'cost':     signed_cost,
+                    'timestamp': timestamp
+                })
+
+        else:
+            # No header: parse by position
+            f.seek(0)
+            reader = csv.reader(f)
+            for row in reader:
+                if not row:
+                    continue
+                # Skip a literal header row if present
+                if row[0].lower() == 'timestamp':
+                    continue
+
+                ts_str = row[0]
+                if ts_str.endswith('Z'):
+                    ts_str = ts_str.replace('Z', '+00:00')
+                timestamp = datetime.fromisoformat(ts_str)
+
+                strategy = row[1].strip()
+                side     = row[2].strip().lower()
+                price    = float(row[3])
+                amount   = float(row[4])
+                cost     = float(row[5])
+                signed_cost = cost if side == 'sell' else -cost
+
+                trades.append({
+                    'strategy': strategy,
+                    'side':     side,
+                    'price':    price,
+                    'amount':   amount,
+                    'cost':     signed_cost,
+                    'timestamp': timestamp
+                })
+
     return trades
+
 
 def compute_average_hold_time(trades):
     """
@@ -85,6 +128,7 @@ def compute_average_hold_time(trades):
     avg_sec = sum(durations) / len(durations)
     return timedelta(seconds=avg_sec)
 
+
 def main():
     if not os.path.exists(DATA_FILE):
         print(f"No trades file found at '{DATA_FILE}'. Run the bot and generate some trades first.")
@@ -114,6 +158,7 @@ def main():
         print(f"\nAverage hold time: {int(hours)}h {int(minutes)}m {int(seconds)}s")
     else:
         print("\nAverage hold time: no closed round-trips to compute hold time.")
+
 
 if __name__ == '__main__':
     main()

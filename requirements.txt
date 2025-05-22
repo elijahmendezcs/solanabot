@@ -1,4 +1,6 @@
+# requirements.txt
 python-dotenv
 solana
 ccxt
 requests
+aiohttp
