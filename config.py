@@ -2,6 +2,7 @@
 
 # ─── Trading Pairs & Order Size ────────────────────────────────────────────────
 SYMBOLS       = ["SOL/USDT", "ETH/USDT"]  # extend this list as you add more assets
+SYMBOL        = SYMBOLS[0]                # default single-symbol for scripts
 USDT_AMOUNT   = 10.0                      # USD value per trade (used in backtests)
 
 # Percent of quote balance to risk per trade

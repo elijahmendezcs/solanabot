@@ -1,81 +1,97 @@
 # File: backtest.py
 
 import argparse
-import statistics
 from datetime import datetime
+
 from exchange import fetch_ohlcv
 from config import FAST_SMA, SLOW_SMA, TIMEFRAME, SYMBOL, FEE_PCT, SLIPPAGE_PCT
-
-
-def generate_signal(closes, fast, slow):
-    """
-    Given a list of closing prices, return "buy", "sell", or None
-    based on a simple fast/slow SMA crossover.
-    """
-    if len(closes) < slow + 1:
-        return None
-    sma_fast_prev = statistics.mean(closes[-(fast+1):-1])
-    sma_slow_prev = statistics.mean(closes[-(slow+1):-1])
-    sma_fast_now  = statistics.mean(closes[-fast:])
-    sma_slow_now  = statistics.mean(closes[-slow:])
-    if sma_fast_prev <= sma_slow_prev and sma_fast_now > sma_slow_now:
-        return "buy"
-    if sma_fast_prev >= sma_slow_prev and sma_fast_now < sma_slow_now:
-        return "sell"
-    return None
+from utils.signals import generate_sma_signal
 
 
 def run_backtest(fast, slow):
+    """
+    Run an SMA crossover backtest returning structured trade data and P&L.
+
+    Returns:
+        dict: {
+            'trades': List[{
+                'entry_index': int,
+                'exit_index': int,
+                'entry_price': float,
+                'exit_price': float,
+                'pnl': float
+            }],
+            'total_pnl': float
+        }
+    """
     print(f"Backtest run at {datetime.utcnow().isoformat()} UTC for FAST={fast}, SLOW={slow}")
 
-    # 1) Fetch ~500 1-m bars of history
     bars = fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=500)
     closes = [bar[4] for bar in bars]
 
-    position   = 0       # 0 = flat, 1 = long
-    entry_cost = 0.0     # cost basis including fee & slippage
-    pnl        = 0.0
+    trades = []
+    position = None  # None or 'long'
+    entry_cost = entry_price = entry_index = None
 
-    # 2) Step through each bar
+    # Walk through bars
     for i in range(slow, len(closes)):
-        window = closes[: i+1]
-        sig    = generate_signal(window, fast, slow)
-        price  = closes[i]
+        window = closes[: i + 1]
+        sig = generate_sma_signal(window, fast, slow)
+        price = closes[i]
 
-        # On buy, simulate slippage + fee
-        if sig == "buy" and position == 0:
-            entry_price_slipped = price * (1 + SLIPPAGE_PCT)
-            entry_cost = entry_price_slipped * (1 + FEE_PCT)
-            print(f"{i:3d}: BUY  @ {price:.2f}  (cost incl fee/slip: {entry_cost:.2f})")
-            position = 1
+        # Enter long
+        if sig == "buy" and position is None:
+            slipped = price * (1 + SLIPPAGE_PCT)
+            entry_cost = slipped * (1 + FEE_PCT)
+            entry_price = price
+            entry_index = i
+            position = 'long'
 
-        # On sell, simulate slippage + fee, compute P&L
-        elif sig == "sell" and position == 1:
-            exit_price_slipped = price * (1 - SLIPPAGE_PCT)
-            proceeds = exit_price_slipped * (1 - FEE_PCT)
-            trade_pnl = proceeds - entry_cost
-            pnl += trade_pnl
-            print(f"{i:3d}: SELL @ {price:.2f}, P&L = {trade_pnl:.2f} (proceeds incl fee/slip: {proceeds:.2f})")
-            position = 0
+        # Exit long
+        elif sig == "sell" and position == 'long':
+            slipped = price * (1 - SLIPPAGE_PCT)
+            proceeds = slipped * (1 - FEE_PCT)
+            pnl = proceeds - entry_cost
+            trades.append({
+                'entry_index': entry_index,
+                'exit_index': i,
+                'entry_price': entry_price,
+                'exit_price': price,
+                'pnl': pnl
+            })
+            position = None
+            entry_cost = entry_price = entry_index = None
 
-    # 3) Close any remaining position at the last price
-    if position == 1:
+    # Close any open at last bar
+    if position == 'long':
         price = closes[-1]
-        exit_price_slipped = price * (1 - SLIPPAGE_PCT)
-        proceeds = exit_price_slipped * (1 - FEE_PCT)
-        trade_pnl = proceeds - entry_cost
-        pnl += trade_pnl
-        print(f"Exit LAST @ {price:.2f}, P&L = {trade_pnl:.2f}")
+        slipped = price * (1 - SLIPPAGE_PCT)
+        proceeds = slipped * (1 - FEE_PCT)
+        pnl = proceeds - entry_cost
+        trades.append({
+            'entry_index': entry_index,
+            'exit_index': len(closes) - 1,
+            'entry_price': entry_price,
+            'exit_price': price,
+            'pnl': pnl
+        })
 
-    print(f"\nTotal P&L over backtest: {pnl:.2f} USDT")
+    total_pnl = sum(t['pnl'] for t in trades)
+    print(f"Total trades: {len(trades)}, Total P&L: {total_pnl:.2f} USDT")
+    return {'trades': trades, 'total_pnl': total_pnl}
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run SMA backtest with fees/slippage")
+    parser = argparse.ArgumentParser(description="Run SMA backtest with structured output")
     parser.add_argument("fast", type=int, nargs="?", help="Fast SMA period (default from config)")
     parser.add_argument("slow", type=int, nargs="?", help="Slow SMA period (default from config)")
     args = parser.parse_args()
 
     fast = args.fast if args.fast is not None else FAST_SMA
     slow = args.slow if args.slow is not None else SLOW_SMA
-    run_backtest(fast, slow)
+    result = run_backtest(fast, slow)
+
+    # Print each trade
+    for t in result['trades']:
+        print(f"Trade: entry@{t['entry_price']:.2f}(i={t['entry_index']}), "
+              f"exit@{t['exit_price']:.2f}(i={t['exit_index']}), PnL={t['pnl']:.2f}")
