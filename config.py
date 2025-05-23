@@ -41,6 +41,9 @@ ATR_THRESHOLD  = 0.005         # ATR / price > 0.5% → trending
 
 
 # ─── Loop & Data Settings ───────────────────────────────────────────────────
-TIMEFRAME     = "1m"           # Changed to 1-minute bars for faster heartbeats
+TIMEFRAME     = "5m"           # 5-minute bars for stable heartbeats
 OHLCV_LIMIT   = SLOW_SMA + 1
 LOOP_INTERVAL = 5              # Seconds to wait between cycles
+
+# Debug settings
+DEBUG = False                   # Toggle debug prints in realtime feed
