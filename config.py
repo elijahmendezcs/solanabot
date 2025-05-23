@@ -43,3 +43,8 @@ LOOP_INTERVAL = 5                         # Seconds to wait between cycles
 
 # Debug settings
 DEBUG = False                             # Toggle debug prints in realtime feed
+
+# ─── MACD Settings ───────────────────────────────────────────────────────────
+MACD_FAST_PERIOD   = 12                   # EMA period for the fast line
+MACD_SLOW_PERIOD   = 26                   # EMA period for the slow line
+MACD_SIGNAL_PERIOD = 9                    # EMA period for the signal line

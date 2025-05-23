@@ -1,4 +1,5 @@
 # File: utils/indicators.py
+import statistics
 
 """
 Utility functions for technical indicators.
@@ -22,6 +23,7 @@ def true_ranges(bars):
         trs.append(tr)
     return trs
 
+
 def atr(bars, period):
     """
     Calculate the Average True Range over the last `period` bars.
@@ -29,13 +31,50 @@ def atr(bars, period):
     """
     window = bars[-(period + 1):]
     trs = true_ranges(window)
-    # No true ranges yet
     if not trs:
         return 0.0
-
-    # Partial fallback until we have `period` values
     if len(trs) < period:
         return sum(trs) / len(trs)
-
-    # Full ATR
     return sum(trs[-period:]) / period
+
+
+def ema(values, period):
+    """
+    Compute the Exponential Moving Average over the entire list `values`
+    using a smoothing factor α = 2/(period+1). Returns a list of EMA values
+    of the same length as `values` (with first EMA = simple average of first
+    `period` values).
+    """
+    if len(values) < period:
+        return [None] * len(values)
+    emas = []
+    sma = sum(values[:period]) / period
+    emas.extend([None] * (period - 1))
+    emas.append(sma)
+    α = 2 / (period + 1)
+    for price in values[period:]:
+        prev = emas[-1]
+        next_ema = (price - prev) * α + prev
+        emas.append(next_ema)
+    return emas
+
+
+def macd_lines(closes, fast_period, slow_period, signal_period):
+    """
+    Given a list of closing prices, return three equal-length lists:
+      (macd_line, signal_line, histogram)
+    """
+    fast_ema = ema(closes, fast_period)
+    slow_ema = ema(closes, slow_period)
+    macd_line = [
+        f - s if f is not None and s is not None else None
+        for f, s in zip(fast_ema, slow_ema)
+    ]
+    valid = [m for m in macd_line if m is not None]
+    sig_vals = ema(valid, signal_period) if len(valid) >= signal_period else []
+    signal_line = [None] * (len(macd_line) - len(sig_vals)) + sig_vals
+    hist = [
+        m - s if (m is not None and s is not None) else None
+        for m, s in zip(macd_line, signal_line)
+    ]
+    return macd_line, signal_line, hist

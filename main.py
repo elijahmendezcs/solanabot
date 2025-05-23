@@ -1,5 +1,4 @@
 # File: main.py
-
 import asyncio
 from datetime import datetime
 
@@ -10,11 +9,13 @@ from db import init_db, log_trade_db
 from config import (
     SYMBOLS, USDT_AMOUNT, TIMEFRAME, PAPER_TRADING,
     FAST_SMA, SLOW_SMA,
-    ATR_PERIOD, ATR_THRESHOLD
+    ATR_PERIOD, ATR_THRESHOLD,
+    MACD_FAST_PERIOD, MACD_SLOW_PERIOD, MACD_SIGNAL_PERIOD
 )
 from utils.indicators import atr
 from strategies.sma_crossover import SmaCrossover
 from strategies.rsi import RsiStrategy
+from strategies.macd import MacdStrategy
 from realtime import Realtime
 
 
@@ -31,25 +32,30 @@ async def run_symbol(symbol):
 
     # Instantiate strategies for this symbol
     strategy_objs = []
-    for cls in [SmaCrossover, RsiStrategy]:
+    for cls in [SmaCrossover, RsiStrategy, MacdStrategy]:
         params = {"symbol": symbol, "usdt_amount": USDT_AMOUNT}
         if cls is SmaCrossover:
             params.update({"fast": FAST_SMA, "slow": SLOW_SMA})
+        if cls is MacdStrategy:
+            params.update({
+                "macd_fast":   MACD_FAST_PERIOD,
+                "macd_slow":   MACD_SLOW_PERIOD,
+                "macd_signal": MACD_SIGNAL_PERIOD,
+            })
         strat = cls(exchange, params)
         strategy_objs.append(strat)
 
-    # Streams: slow for signals, fast for emergencies
+    # Streams: slow for signals, fast for emergency monitor
     ws_slow = Realtime(symbol=symbol, interval=TIMEFRAME, debug=False)
     ws_fast = Realtime(symbol=symbol, interval="1m", debug=False)
 
-    # Emergency monitor (1m feed)
+    # Emergency monitor task
     async def monitor_emergency():
         async for bar in ws_fast.ohlcv_stream():
             price = bar[4]
             for strat in strategy_objs:
                 sig = None
-                # Emergency stop-loss for SMA strategy
-                if isinstance(strat, SmaCrossover) and strat.stop_loss_price is not None:
+                if hasattr(strat, 'stop_loss_price') and strat.stop_loss_price is not None:
                     if price <= strat.stop_loss_price:
                         asset = symbol.split("/")[0]
                         bal = exchange.fetch_balance()["free"].get(asset, 0)
@@ -57,13 +63,11 @@ async def run_symbol(symbol):
                             amt = float(exchange.amount_to_precision(symbol, bal))
                             sig = {"side": "sell", "amount": amt, "reason": "stop-loss-emergency"}
                 if sig:
-                    # Log to DB and notify
                     cost = price * sig["amount"]
-                    log_trade_db(symbol, strat.__class__.__name__, sig["side"], price, sig["amount"], cost, sig["reason"])
-                    msg = format_message(symbol, strat.__class__.__name__, sig["side"], sig["amount"], price, sig["reason"])
+                    log_trade_db(symbol, strat.__class__.__name__, sig["side"], price, sig["amount"], cost, sig.get("reason"))
+                    msg = format_message(symbol, strat.__class__.__name__, sig["side"], sig["amount"], price, sig.get("reason"))
                     send_telegram(msg)
-                    log.info(f"[EMERGENCY][{'PAPER]' if PAPER_TRADING else ''}{symbol}] "
-                             f"{sig['side'].upper()} {sig['amount']:.8f} @ {price:.2f} ({sig['reason']})")
+                    log.info(f"[EMERGENCY][{'PAPER]' if PAPER_TRADING else ''}{symbol}] {sig['side'].upper()} {sig['amount']:.8f} @ {price:.2f} ({sig.get('reason')})")
 
     asyncio.create_task(monitor_emergency())
 
@@ -87,6 +91,7 @@ async def run_symbol(symbol):
         log.info(f"[{symbol}] Volatility: {volatility:.3%} → {'Trending' if is_trending else 'Ranging'}")
 
         for strat in strategy_objs:
+            # Skip out-of-regime strategies
             if isinstance(strat, SmaCrossover) and not is_trending:
                 continue
             if isinstance(strat, RsiStrategy) and is_trending:
@@ -120,9 +125,7 @@ async def run_symbol(symbol):
         await asyncio.sleep(0)
 
 async def main():
-    # Initialize SQLite database
     init_db()
-    # Launch engine for each symbol
     tasks = [asyncio.create_task(run_symbol(sym)) for sym in SYMBOLS]
     await asyncio.gather(*tasks)
 
