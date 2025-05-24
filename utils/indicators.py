@@ -1,4 +1,5 @@
 # File: utils/indicators.py
+
 import statistics
 
 """
@@ -23,7 +24,6 @@ def true_ranges(bars):
         trs.append(tr)
     return trs
 
-
 def atr(bars, period):
     """
     Calculate the Average True Range over the last `period` bars.
@@ -36,7 +36,6 @@ def atr(bars, period):
     if len(trs) < period:
         return sum(trs) / len(trs)
     return sum(trs[-period:]) / period
-
 
 def ema(values, period):
     """
@@ -51,13 +50,12 @@ def ema(values, period):
     sma = sum(values[:period]) / period
     emas.extend([None] * (period - 1))
     emas.append(sma)
-    α = 2 / (period + 1)
+    alpha = 2 / (period + 1)
     for price in values[period:]:
         prev = emas[-1]
-        next_ema = (price - prev) * α + prev
+        next_ema = (price - prev) * alpha + prev
         emas.append(next_ema)
     return emas
-
 
 def macd_lines(closes, fast_period, slow_period, signal_period):
     """
@@ -78,3 +76,43 @@ def macd_lines(closes, fast_period, slow_period, signal_period):
         for m, s in zip(macd_line, signal_line)
     ]
     return macd_line, signal_line, hist
+
+def bollinger_bands(closes, period=20, num_std_dev=2):
+    """
+    Compute Bollinger Bands for a list of closing prices.
+    Returns three lists: (lower_band, middle_sma, upper_band)
+    """
+    # Not enough data
+    if len(closes) < period:
+        return [None] * len(closes), [None] * len(closes), [None] * len(closes)
+
+    # Compute middle band (SMA)
+    middle = []
+    for i in range(len(closes)):
+        if i < period - 1:
+            middle.append(None)
+        else:
+            window = closes[i-period+1:i+1]
+            middle.append(sum(window) / period)
+
+    # Compute standard deviation over the same window
+    std_dev = []
+    for i in range(len(closes)):
+        if i < period - 1:
+            std_dev.append(None)
+        else:
+            window = closes[i-period+1:i+1]
+            std_dev.append(statistics.pstdev(window))
+
+    # Compute upper and lower bands
+    upper = []
+    lower = []
+    for m, sd in zip(middle, std_dev):
+        if m is None or sd is None:
+            upper.append(None)
+            lower.append(None)
+        else:
+            upper.append(m + num_std_dev * sd)
+            lower.append(m - num_std_dev * sd)
+
+    return lower, middle, upper
