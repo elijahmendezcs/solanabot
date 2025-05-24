@@ -16,6 +16,7 @@ from utils.indicators import atr
 from strategies.sma_crossover import SmaCrossover
 from strategies.rsi import RsiStrategy
 from strategies.macd import MacdStrategy
+from strategies.bollinger import BollingerStrategy
 from realtime import Realtime
 
 
@@ -32,22 +33,25 @@ async def run_symbol(symbol):
 
     # Instantiate strategies for this symbol
     strategy_objs = []
-    for cls in [SmaCrossover, RsiStrategy, MacdStrategy]:
+    for cls in [SmaCrossover, RsiStrategy, MacdStrategy, BollingerStrategy]:
         params = {"symbol": symbol, "usdt_amount": USDT_AMOUNT}
         if cls is SmaCrossover:
             params.update({"fast": FAST_SMA, "slow": SLOW_SMA})
         if cls is MacdStrategy:
             params.update({
-                "macd_fast":   MACD_FAST_PERIOD,
-                "macd_slow":   MACD_SLOW_PERIOD,
+                "macd_fast": MACD_FAST_PERIOD,
+                "macd_slow": MACD_SLOW_PERIOD,
                 "macd_signal": MACD_SIGNAL_PERIOD,
             })
+        if cls is BollingerStrategy:
+            # use default Bollinger settings or override in config
+            params.update({"bb_period": None, "bb_std_dev": None})
         strat = cls(exchange, params)
         strategy_objs.append(strat)
 
     # Streams: slow for signals, fast for emergency monitor
-    ws_slow = Realtime(symbol=symbol, interval=TIMEFRAME, debug=False)
-    ws_fast = Realtime(symbol=symbol, interval="1m", debug=False)
+    ws_slow = Realtime(symbol=symbol, interval=TIMEFRAME)
+    ws_fast = Realtime(symbol=symbol, interval="1m")
 
     # Emergency monitor task
     async def monitor_emergency():
@@ -67,12 +71,14 @@ async def run_symbol(symbol):
                     log_trade_db(symbol, strat.__class__.__name__, sig["side"], price, sig["amount"], cost, sig.get("reason"))
                     msg = format_message(symbol, strat.__class__.__name__, sig["side"], sig["amount"], price, sig.get("reason"))
                     send_telegram(msg)
-                    log.info(f"[EMERGENCY][{'PAPER]' if PAPER_TRADING else ''}{symbol}] {sig['side'].upper()} {sig['amount']:.8f} @ {price:.2f} ({sig.get('reason')})")
+                    log.info(f"[EMERGENCY][{'PAPER' if PAPER_TRADING else ''}][{symbol}] {sig['side'].upper()} {sig['amount']:.8f} @ {price:.2f} ({sig.get('reason')})")
 
     asyncio.create_task(monitor_emergency())
 
     # Main loop (5m feed)
-    max_period = max(getattr(s, "slow", getattr(s, "period", 0)) for s in strategy_objs)
+    max_period = max(
+        getattr(s, 'slow', getattr(s, 'period', 0)) for s in strategy_objs
+    )
     ohlcv_limit = max_period + 1
     bars = []
 
@@ -85,24 +91,28 @@ async def run_symbol(symbol):
         last_price = bars[-1][4]
         log.info(f"[{symbol}] Heartbeat — last price: {last_price:.2f}")
 
+        # Regime detection
         current_atr = atr(bars, ATR_PERIOD)
-        volatility = current_atr / last_price
+        volatility = current_atr / last_price if last_price else 0
         is_trending = volatility > ATR_THRESHOLD
         log.info(f"[{symbol}] Volatility: {volatility:.3%} → {'Trending' if is_trending else 'Ranging'}")
 
         for strat in strategy_objs:
-            # Skip out-of-regime strategies
+            # Regime-based strategy gating
             if isinstance(strat, SmaCrossover) and not is_trending:
                 continue
             if isinstance(strat, RsiStrategy) and is_trending:
+                continue
+            if isinstance(strat, BollingerStrategy) and is_trending:
+                # Bollinger best in ranging markets
                 continue
 
             sig = strat.on_bar(bars)
             if not sig:
                 continue
 
-            side, amt = sig["side"], sig["amount"]
-            reason = sig.get("reason")
+            side, amt = sig['side'], sig['amount']
+            reason = sig.get('reason')
             price = last_price
             cost = price * amt
 
@@ -111,8 +121,9 @@ async def run_symbol(symbol):
             msg = format_message(symbol, strat.__class__.__name__, side, amt, price, reason)
             send_telegram(msg)
 
+            # Execute or paper trade
             if PAPER_TRADING:
-                log.info(f"[PAPER][{symbol}] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {price:.2f}")
+                log.info(f"[PAPER][{symbol}] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {price:.2f} ({reason or ''})")
             else:
                 market = exchange.markets[symbol]
                 min_amt = market["limits"]["amount"]["min"]
@@ -124,10 +135,12 @@ async def run_symbol(symbol):
 
         await asyncio.sleep(0)
 
+
 async def main():
     init_db()
     tasks = [asyncio.create_task(run_symbol(sym)) for sym in SYMBOLS]
     await asyncio.gather(*tasks)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
