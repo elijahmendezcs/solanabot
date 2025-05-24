@@ -6,3 +6,4 @@ requests
 aiohttp
 ipywidgets
 seaborn
+streamlit
