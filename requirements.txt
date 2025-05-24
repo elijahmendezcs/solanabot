@@ -4,3 +4,5 @@ solana
 ccxt
 requests
 aiohttp
+ipywidgets
+seaborn
