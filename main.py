@@ -1,4 +1,3 @@
-# File: main.py
 import asyncio
 from datetime import datetime
 
@@ -21,7 +20,7 @@ from realtime import Realtime
 
 
 def format_message(symbol, strategy_name, side, amount, price, reason=None):
-    msg = f"{symbol} | {strategy_name}: {side.upper()} {amount:.8f} @ {price:.2f}"
+    msg = f"{symbol} | {strategy_name}: {side.upper()} {amount} @ {price:.2f}"
     if reason:
         msg += f" ({reason})"
     return msg
@@ -43,7 +42,6 @@ async def run_symbol(symbol):
                 "macd_slow": MACD_SLOW_PERIOD,
                 "macd_signal": MACD_SIGNAL_PERIOD,
             })
-        # BollingerStrategy uses its own defaults if no bb_period/bb_std_dev provided
         strat = cls(exchange, params)
         strategy_objs.append(strat)
 
@@ -61,14 +59,14 @@ async def run_symbol(symbol):
                         asset = symbol.split("/")[0]
                         bal = exchange.fetch_balance()["free"].get(asset, 0)
                         if bal > 0:
-                            amt = float(exchange.amount_to_precision(symbol, bal))
+                            amt = exchange.amount_to_precision(symbol, bal)
                             sig = {"side": "sell", "amount": amt, "reason": "stop-loss-emergency"}
                 if sig:
-                    cost = price * sig["amount"]
-                    log_trade_db(symbol, strat.__class__.__name__, sig["side"], price, sig["amount"], cost, sig.get("reason"))
+                    cost = price * float(sig["amount"])
+                    log_trade_db(symbol, strat.__class__.__name__, sig["side"], price, float(sig["amount"]), cost, sig.get("reason"))
                     msg = format_message(symbol, strat.__class__.__name__, sig["side"], sig["amount"], price, sig.get("reason"))
                     send_telegram(msg)
-                    log.info(f"[EMERGENCY][{'PAPER' if PAPER_TRADING else ''}][{symbol}] {sig['side'].upper()} {sig['amount']:.8f} @ {price:.2f} ({sig.get('reason')})")
+                    log.info(f"[EMERGENCY][{'PAPER' if PAPER_TRADING else ''}][{symbol}] {sig['side'].upper()} {sig['amount']} @ {price:.2f} ({sig.get('reason')})")
 
     asyncio.create_task(monitor_emergency())
 
@@ -105,26 +103,33 @@ async def run_symbol(symbol):
             if not sig:
                 continue
 
-            side, amt = sig['side'], sig['amount']
+            side, raw_amt = sig['side'], sig['amount']
             reason = sig.get('reason')
             price = last_price
-            cost = price * amt
 
             # Log to DB and notify
-            log_trade_db(symbol, strat.__class__.__name__, side, price, amt, cost, reason)
-            msg = format_message(symbol, strat.__class__.__name__, side, amt, price, reason)
+            cost = price * float(raw_amt)
+            log_trade_db(symbol, strat.__class__.__name__, side, price, float(raw_amt), cost, reason)
+            msg = format_message(symbol, strat.__class__.__name__, side, raw_amt, price, reason)
             send_telegram(msg)
 
             if PAPER_TRADING:
-                log.info(f"[PAPER][{symbol}] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {price:.2f} ({reason or ''})")
+                log.info(f"[PAPER][{symbol}] {strat.__class__.__name__}: {side.upper()} {raw_amt} @ {price:.2f} ({reason or ''})")
             else:
+                # Enforce minimum size
                 market = exchange.markets[symbol]
                 min_amt = market['limits']['amount']['min']
+                amt = float(raw_amt)
                 if amt < min_amt:
                     log.info(f"Skipped {symbol} {side} {amt:.8f} — below min size {min_amt}")
                     continue
-                order = exchange.create_market_order(symbol, side, amt)
-                log.info(f"[{symbol}] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {order['price']:.2f}")
+                # Format to exchange precision
+                precise_amt = exchange.amount_to_precision(symbol, amt)
+                try:
+                    order = exchange.create_market_order(symbol, side, precise_amt)
+                    log.info(f"[{symbol}] {strat.__class__.__name__}: {side.upper()} {precise_amt} @ {order['price']:.2f}")
+                except Exception as e:
+                    log.error(f"Order placement failed for {symbol} {side} {precise_amt}: {e}")
 
         await asyncio.sleep(0)
 
