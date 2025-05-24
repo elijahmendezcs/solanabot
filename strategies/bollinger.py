@@ -13,8 +13,10 @@ class BollingerStrategy(BaseStrategy):
     def __init__(self, exchange, config):
         super().__init__(exchange, config)
         self.symbol = config["symbol"]
-        self.period = config.get("bb_period", config.get("bb_period", 20))
-        self.num_std_dev = config.get("bb_std_dev", 2)
+        period = config.get("bb_period")
+        self.period = period if period is not None else 20
+        std = config.get("bb_std_dev")
+        self.num_std_dev = std if std is not None else 2
         self.entry_price = None
         self.stop_loss_price = None
 
@@ -31,7 +33,7 @@ class BollingerStrategy(BaseStrategy):
         lb = lower[-1]
         ub = upper[-1]
 
-        # 1) Check hard stop-loss
+        # 1) Hard stop-loss check
         if self.stop_loss_price and price <= self.stop_loss_price:
             asset = self.symbol.split("/")[0]
             bal = self.exchange.fetch_balance()["free"].get(asset, 0)
@@ -42,7 +44,7 @@ class BollingerStrategy(BaseStrategy):
                 return {"side": "sell", "amount": amt, "reason": "stop-loss"}
 
         # 2) Entry: price below lower band
-        if price is not None and lb is not None and price < lb and self.entry_price is None:
+        if lb is not None and price < lb and self.entry_price is None:
             quote = self.symbol.split("/")[1]
             quote_bal = self.exchange.fetch_balance()["free"].get(quote, 0)
             usdt_to_spend = quote_bal * ORDER_FRACTION
@@ -52,7 +54,7 @@ class BollingerStrategy(BaseStrategy):
             return {"side": "buy", "amount": amt, "reason": "bb_lower"}
 
         # 3) Exit: price above upper band
-        if price is not None and ub is not None and price > ub and self.entry_price is not None:
+        if ub is not None and price > ub and self.entry_price is not None:
             asset = self.symbol.split("/")[0]
             bal = self.exchange.fetch_balance()["free"].get(asset, 0)
             if bal > 0:
@@ -61,5 +63,4 @@ class BollingerStrategy(BaseStrategy):
                 self.stop_loss_price = None
                 return {"side": "sell", "amount": amt, "reason": "bb_upper"}
 
-        # No signal
         return None

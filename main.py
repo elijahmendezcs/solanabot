@@ -43,9 +43,7 @@ async def run_symbol(symbol):
                 "macd_slow": MACD_SLOW_PERIOD,
                 "macd_signal": MACD_SIGNAL_PERIOD,
             })
-        if cls is BollingerStrategy:
-            # use default Bollinger settings or override in config
-            params.update({"bb_period": None, "bb_std_dev": None})
+        # BollingerStrategy uses its own defaults if no bb_period/bb_std_dev provided
         strat = cls(exchange, params)
         strategy_objs.append(strat)
 
@@ -53,7 +51,6 @@ async def run_symbol(symbol):
     ws_slow = Realtime(symbol=symbol, interval=TIMEFRAME)
     ws_fast = Realtime(symbol=symbol, interval="1m")
 
-    # Emergency monitor task
     async def monitor_emergency():
         async for bar in ws_fast.ohlcv_stream():
             price = bar[4]
@@ -76,9 +73,7 @@ async def run_symbol(symbol):
     asyncio.create_task(monitor_emergency())
 
     # Main loop (5m feed)
-    max_period = max(
-        getattr(s, 'slow', getattr(s, 'period', 0)) for s in strategy_objs
-    )
+    max_period = max(getattr(s, 'slow', getattr(s, 'period', 0)) for s in strategy_objs)
     ohlcv_limit = max_period + 1
     bars = []
 
@@ -98,13 +93,12 @@ async def run_symbol(symbol):
         log.info(f"[{symbol}] Volatility: {volatility:.3%} → {'Trending' if is_trending else 'Ranging'}")
 
         for strat in strategy_objs:
-            # Regime-based strategy gating
+            # Regime-based gating
             if isinstance(strat, SmaCrossover) and not is_trending:
                 continue
             if isinstance(strat, RsiStrategy) and is_trending:
                 continue
             if isinstance(strat, BollingerStrategy) and is_trending:
-                # Bollinger best in ranging markets
                 continue
 
             sig = strat.on_bar(bars)
@@ -121,12 +115,11 @@ async def run_symbol(symbol):
             msg = format_message(symbol, strat.__class__.__name__, side, amt, price, reason)
             send_telegram(msg)
 
-            # Execute or paper trade
             if PAPER_TRADING:
                 log.info(f"[PAPER][{symbol}] {strat.__class__.__name__}: {side.upper()} {amt:.8f} @ {price:.2f} ({reason or ''})")
             else:
                 market = exchange.markets[symbol]
-                min_amt = market["limits"]["amount"]["min"]
+                min_amt = market['limits']['amount']['min']
                 if amt < min_amt:
                     log.info(f"Skipped {symbol} {side} {amt:.8f} — below min size {min_amt}")
                     continue
