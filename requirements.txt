@@ -7,3 +7,6 @@ aiohttp
 ipywidgets
 seaborn
 streamlit
+fastapi
+uvicorn[standard]
+redis
