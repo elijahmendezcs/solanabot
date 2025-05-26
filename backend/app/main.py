@@ -6,6 +6,9 @@ import os
 import json
 import redis
 
+# ─── CORS ─────────────────────────────────────────────────────────────────────
+from fastapi.middleware.cors import CORSMiddleware
+
 # Your existing imports for grid and MACD backtest
 from grid_backtest import grid_search_with_winrate
 from backtest_macd import run_backtest_macd, DummyExchange as MacdDummyExchange
@@ -13,6 +16,15 @@ from strategies.macd import MacdStrategy
 from config import SYMBOL, TIMEFRAME, FEE_PCT, SLIPPAGE_PCT, USDT_AMOUNT
 
 app = FastAPI()
+
+# Allow the dashboard (Next.js dev server) to make cross‑origin requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Resolve path to trades.db
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -117,7 +129,7 @@ def macd_grid(
         return json.loads(cached)
 
     out = []
-    # You might pre-fetch bars once, but here we use your runner per combo
+    # You might pre‑fetch bars once, but here we use your runner per combo
     for f in fast:
         for s in slow:
             if s <= f:
