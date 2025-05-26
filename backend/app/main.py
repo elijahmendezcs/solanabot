@@ -9,10 +9,15 @@ import redis
 # ─── CORS ─────────────────────────────────────────────────────────────────────
 from fastapi.middleware.cors import CORSMiddleware
 
+# Data fetch
+from exchange import fetch_ohlcv
+
 # Your existing imports for grid and MACD backtest
 from grid_backtest import grid_search_with_winrate
 from backtest_macd import run_backtest_macd, DummyExchange as MacdDummyExchange
 from strategies.macd import MacdStrategy
+
+# Config defaults
 from config import SYMBOL, TIMEFRAME, FEE_PCT, SLIPPAGE_PCT, USDT_AMOUNT
 
 app = FastAPI()
@@ -38,6 +43,23 @@ redis_client  = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/ohlcv")
+def get_ohlcv(
+    symbol: str = Query(..., description="Trading pair symbol, e.g. 'SOL/USDT'"),
+    timeframe: str = Query(TIMEFRAME, description="Timeframe string, e.g. '5m'"),
+    limit: int = Query(500, description="Number of bars to fetch")
+):
+    """
+    Fetch raw OHLCV bars for a given symbol and timeframe.
+    Returns a list of [timestamp, open, high, low, close, volume].
+    """
+    try:
+        bars = fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        return bars
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching OHLCV: {e}")
 
 
 def get_connection():
@@ -103,14 +125,11 @@ def sma_grid(
     """
     Run SMA grid search with caching.
     """
-    # Build a cache key
     key = f"sma:{','.join(map(str,fast))}:{','.join(map(str,slow))}"
     if cached := redis_client.get(key):
         return json.loads(cached)
 
-    # Cache miss → compute
     results = grid_search_with_winrate(fast, slow, FEE_PCT, SLIPPAGE_PCT)
-    # Store in Redis for 1h
     redis_client.set(key, json.dumps(results), ex=3600)
     return results
 
@@ -129,15 +148,13 @@ def macd_grid(
         return json.loads(cached)
 
     out = []
-    # You might pre‑fetch bars once, but here we use your runner per combo
     for f in fast:
         for s in slow:
             if s <= f:
                 continue
-            # Backtest
             res = run_backtest_macd()
             trades = res["trades"]
-            wins   = sum(1 for t in trades if t["pnl"] > 0)
+            wins   = sum(1 for t in trades if t.get("pnl", 0) > 0)
             count  = len(trades)
             win_rate = wins / count if count else 0.0
 
@@ -145,7 +162,7 @@ def macd_grid(
                 "fast":       f,
                 "slow":       s,
                 "signal":     signal,
-                "total_pnl":  res["total_pnl"],
+                "total_pnl":  res.get("total_pnl", 0),
                 "trade_count": count,
                 "win_rate":   win_rate
             })

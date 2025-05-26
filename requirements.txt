@@ -10,3 +10,5 @@ streamlit
 fastapi
 uvicorn[standard]
 redis
+pandas
+matplotlib
