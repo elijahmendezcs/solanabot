@@ -1,30 +1,29 @@
-# backend/app/main.py
-
-import sys
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from typing import Optional, List
 from pathlib import Path
-
-# ─── add project root to PYTHONPATH so "import exchange" etc. works ─────────
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.append(str(ROOT))
-
+import sqlite3
 import os
 import json
-import sqlite3
-import asyncio
 import redis
+import asyncio
 
-from fastapi import FastAPI, HTTPException, Query
-from typing import Optional, List
+# ─── CORS ─────────────────────────────────────────────────────────────────────
 from fastapi.middleware.cors import CORSMiddleware
 
-# ─── your existing imports ───────────────────────────────────────────────────
+# Data fetch
 from exchange import fetch_ohlcv
+
+# Grid & MACD backtests
 from grid_backtest import grid_search_with_winrate
 from backtest_macd import run_backtest_macd, DummyExchange as MacdDummyExchange
 from strategies.macd import MacdStrategy
+
+# Notifications (Telegram alerts)
+import notifications
+
+# Config defaults
 from config import SYMBOL, TIMEFRAME, FEE_PCT, SLIPPAGE_PCT, USDT_AMOUNT
 
-# ─── app + CORS ───────────────────────────────────────────────────────────────
 app = FastAPI()
 
 app.add_middleware(
@@ -35,10 +34,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Paths & Redis client ────────────────────────────────────────────────────
-DB_PATH     = ROOT / "data" / "trades.db"
-REDIS_URL   = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-redis_client= redis.Redis.from_url(REDIS_URL, decode_responses=True)
+# ─── Paths & Redis ────────────────────────────────────────────────────────────
+BASE_DIR     = Path(__file__).resolve().parents[2]
+DB_PATH      = BASE_DIR / "data" / "trades.db"
+REDIS_URL    = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+
+# Bot state & thresholds
+BOT_STATE_KEY       = "bot:state"       # "running", "paused", "stopped"
+DRAWDOWN_KEY        = "bot:drawdown_threshold"  # e.g. 0.15 for 15%
+
 
 def get_connection():
     try:
@@ -48,12 +53,12 @@ def get_connection():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB connection error: {e}")
 
-# ─── HEALTH ──────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ─── OHLCV ───────────────────────────────────────────────────────────────────
+
 @app.get("/ohlcv")
 def get_ohlcv(
     symbol:    str = Query(..., description="Trading pair symbol, e.g. 'SOL/USDT'"),
@@ -65,12 +70,12 @@ def get_ohlcv(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching OHLCV: {e}")
 
-# ─── TRADES ──────────────────────────────────────────────────────────────────
+
 @app.get("/trades")
 def list_trades(
-    symbol:   Optional[str] = None,
-    strategy: Optional[str] = None,
-    limit:    int            = 100
+    symbol:    Optional[str] = None,
+    strategy:  Optional[str] = None,
+    limit:     int            = 100
 ):
     conn   = get_connection()
     cursor = conn.cursor()
@@ -92,7 +97,7 @@ def list_trades(
     conn.close()
     return [dict(r) for r in rows]
 
-# ─── PNL SUMMARY ─────────────────────────────────────────────────────────────
+
 @app.get("/pnl")
 def pnl_summary():
     conn   = get_connection()
@@ -109,11 +114,11 @@ def pnl_summary():
     conn.close()
     return [dict(r) for r in rows]
 
-# ─── EQUITY CURVE ─────────────────────────────────────────────────────────────
+
 @app.get("/equity_curve")
 def equity_curve(
-    symbol:   Optional[str] = Query(None, description="Filter by symbol, e.g. 'SOL/USDT'"),
-    strategy: Optional[str] = Query(None, description="Filter by strategy class name")
+    symbol:    Optional[str] = Query(None, description="Filter by symbol, e.g. 'SOL/USDT'"),
+    strategy:  Optional[str] = Query(None, description="Filter by strategy class name")
 ):
     conn   = get_connection()
     cursor = conn.cursor()
@@ -133,13 +138,15 @@ def equity_curve(
     cum    = 0.0
     series = []
     for row in cursor.fetchall():
-        cum += row["cost"]
-        series.append({"timestamp": row["timestamp"], "cum_pnl": cum})
+        ts   = row["timestamp"]
+        cost = row["cost"]
+        cum += cost
+        series.append({"timestamp": ts, "cum_pnl": cum})
 
     conn.close()
     return series
 
-# ─── SMA GRID ────────────────────────────────────────────────────────────────
+
 @app.get("/grid/sma")
 def sma_grid(
     fast: List[int] = Query(..., description="Fast SMA periods"),
@@ -153,7 +160,7 @@ def sma_grid(
     redis_client.set(key, json.dumps(results), ex=3600)
     return results
 
-# ─── MACD GRID ───────────────────────────────────────────────────────────────
+
 @app.get("/grid/macd")
 def macd_grid(
     fast:   List[int] = Query(..., description="MACD fast EMA periods"),
@@ -187,45 +194,91 @@ def macd_grid(
     redis_client.set(key, json.dumps(out), ex=3600)
     return out
 
-# ─── BOT CONTROL LOOP ────────────────────────────────────────────────────────
-bot_pause_event = asyncio.Event()
-bot_pause_event.set()   # when clear() ⇒ paused, set() ⇒ running
-bot_stop_event  = asyncio.Event()
 
-async def bot_loop():
-    # replace this sleep with your real "run one iteration" call
-    while not bot_stop_event.is_set():
-        await bot_pause_event.wait()   # blocks when paused
-        # e.g. await run_one_cycle()
-        await asyncio.sleep(1)
+# ─── Bot Control Endpoints ────────────────────────────────────────────────────
 
-@app.on_event("startup")
-async def start_bot_background_task():
-    asyncio.create_task(bot_loop())
-
-# ─── BOT CONTROL ENDPOINTS ──────────────────────────────────────────────────
 @app.post("/bot/start")
-async def start_bot():
-    bot_pause_event.set()
+def bot_start():
+    redis_client.set(BOT_STATE_KEY, "running")
     return {"status": "running"}
 
 @app.post("/bot/pause")
-async def pause_bot():
-    bot_pause_event.clear()
+def bot_pause():
+    redis_client.set(BOT_STATE_KEY, "paused")
     return {"status": "paused"}
 
 @app.post("/bot/stop")
-async def stop_bot():
-    bot_stop_event.set()
-    bot_pause_event.set()   # un‐block if paused
+def bot_stop():
+    redis_client.set(BOT_STATE_KEY, "stopped")
     return {"status": "stopped"}
 
 @app.get("/bot/status")
-async def status_bot():
-    if bot_stop_event.is_set():
-        state = "stopped"
-    elif not bot_pause_event.is_set():
-        state = "paused"
-    else:
-        state = "running"
+def bot_status():
+    state = redis_client.get(BOT_STATE_KEY) or "unknown"
     return {"status": state}
+
+# ─── Kill-Switch Endpoints ───────────────────────────────────────────────────
+
+@app.get("/kill-switch")
+def get_kill_switch():
+    """Get current drawdown threshold (decimal)."""
+    val = redis_client.get(DRAWDOWN_KEY)
+    return {"threshold": float(val) if val else None}
+
+@app.post("/kill-switch")
+def set_kill_switch(
+    threshold: float = Query(..., description="Drawdown threshold as decimal, e.g. 0.15 for 15%")
+):
+    """Set a global drawdown kill-switch threshold."""
+    if threshold <= 0 or threshold >= 1:
+        raise HTTPException(status_code=400, detail="Threshold must be between 0 and 1")
+    redis_client.set(DRAWDOWN_KEY, threshold)
+    return {"threshold": threshold}
+
+
+# ─── Bot Control State & Loop ─────────────────────────────────────────────────
+
+bot_pause_event = asyncio.Event()
+bot_pause_event.set()  # when clear() means "paused", set() means "running"
+bot_stop_event  = asyncio.Event()
+
+async def bot_loop():
+    """
+    A minimal loop that you can later replace with your actual
+    live-engine logic. It now includes a drawdown check.
+    """
+    while not bot_stop_event.is_set():
+        # Check kill-switch drawdown
+        raw_thresh = redis_client.get(DRAWDOWN_KEY)
+        if raw_thresh:
+            thresh = float(raw_thresh)
+            # compute drawdown from trades
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT cost FROM trades ORDER BY timestamp ASC")
+            cum = 0.0
+            peak = 0.0
+            max_dd = 0.0
+            for row in cur.fetchall():
+                cum += row['cost']
+                peak = max(peak, cum)
+                if peak > 0:
+                    dd = (peak - cum) / peak
+                    max_dd = max(max_dd, dd)
+            conn.close()
+            if max_dd >= thresh:
+                # Trigger kill-switch
+                notifications.send_telegram(
+                    f"Kill-switch triggered: drawdown at {max_dd*100:.2f}% >= threshold {thresh*100:.2f}%"
+                )
+                bot_stop_event.set()
+                break
+
+        await bot_pause_event.wait()         # block while paused
+        # <-- here you'd call your live-engine's iteration, e.g. run_one_cycle()
+        await asyncio.sleep(1)               # throttle loop
+
+# Kick off loop on startup
+@app.on_event("startup")
+async def start_bot_background_task():
+    asyncio.create_task(bot_loop())

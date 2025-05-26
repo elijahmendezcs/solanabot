@@ -1,26 +1,17 @@
-import DashboardGrid from "@/components/DashboardGrid";
-import TradeHistoryCard from "@/components/TradeHistoryCard";
+'use client'
 
-export default function Dashboard() {
+import React from 'react'
+import TradeHistoryCard     from '@/components/TradeHistoryCard'
+import StrategyControlsCard from '@/components/StrategyControlsCard'
+// (you can add PriceChartCard / EquityCurveCard here later)
+
+export default function DashboardPage() {
   return (
-    <DashboardGrid>
-      {/* Price chart placeholder */}
-      <div className="col-span-8 row-span-2 rounded-xl bg-card p-6">
-        Price Chart
-      </div>
-
-      {/* Strategy controls */}
-      <div className="col-span-4 row-span-2 rounded-xl bg-card p-6">
-        Strategy Controls
-      </div>
-
-      {/* Equity curve */}
-      <div className="col-span-8 row-span-2 rounded-xl bg-card p-6">
-        Equity Curve
-      </div>
-
-      {/* --- LIVE TRADE TABLE --- */}
+    <main className="container mx-auto p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
       <TradeHistoryCard />
-    </DashboardGrid>
-  );
+      <StrategyControlsCard />
+      {/* <PriceChartCard /> */}
+      {/* <EquityCurveCard /> */}
+    </main>
+  )
 }
