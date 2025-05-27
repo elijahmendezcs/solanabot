@@ -14,8 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from exchange import fetch_ohlcv
 
 # Grid & MACD backtests
-from grid_backtest import grid_search_with_winrate
-from backtest_macd import run_backtest_macd, DummyExchange as MacdDummyExchange
+from backtests.grid_backtest import grid_search_with_winrate
+from backtests.backtest_macd import run_backtest_macd, DummyExchange as MacdDummyExchange
 from strategies.macd import MacdStrategy
 
 # Notifications (Telegram alerts)
